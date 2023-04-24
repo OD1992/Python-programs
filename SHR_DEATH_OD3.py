@@ -828,8 +828,25 @@ for cnt_district in range(nb_districts):
             #plt.ticklabel_format(axis="y", style="sci", scilimits=(0,0))
             if cnt_period == nb_periods-1:
                 plt.ylim(bottom=0)
+            
+            MAE_train = np.mean(np.abs(new_out[train_t_start:train_t_end]-L[train_t_start:train_t_end]))
+            MAE_test = np.mean(np.abs(new_out[train_t_end:test_t_end]-L[train_t_end:test_t_end]))
+            # Mean Absolute Scaled Error (dubious because we make multi-step forecasts, not one-step-ahead forecasts)
+            MASE_train = MAE_train / np.mean(np.abs(new_out[train_t_start+1:train_t_end]-new_out[train_t_start:train_t_end-1]))
+            MASE_test = MAE_test / np.mean(np.abs(new_out[train_t_end+1:test_t_end]-new_out[train_t_end:test_t_end-1]))  # MAE divided by MAE of the prescient naive one-step-ahead predictor (that predicts total_in[t] by total_in[t-1]). Since the decrease is slow, this can be interpreted as the MAE divided by the noise level. If it gets below 1, then the fit is visually excellent. This measure is strongly inspired from Hyndman & Koehler 2006 (https://doi.org/10.1016/j.ijforecast.2006.03.001).
+            # Mean Absolute Pourcentage Error
+            MAPE_train = np.mean(np.abs( (L[train_t_start:train_t_end]-new_out[train_t_start:train_t_end]) / new_out[train_t_start:train_t_end] ))
+            MAPE_test = np.mean(np.abs( (L[train_t_end:test_t_end]-new_out[train_t_end:test_t_end]) / new_out[train_t_end:test_t_end] ))
+            print("MASE_train", MASE_train, "MASE_test", MASE_test, "MAPE_train", MAPE_train, "MAPE_test", MAPE_test)
+    
     #fig.savefig('C:/Users/odiao/Desktop/Model Covid19/programme_python/SHR_PA/Code_Python/Rpred_bar_opt.eps')   # save the figure to file
     #plt.close(fig)
+    
+ 
+    
+    
+    
+    
     
     
 #***************************************************************
@@ -863,8 +880,12 @@ for cnt_district in range(nb_districts):
         return modell(x, u) - y  
     y=death
     u=np.cumsum(death)  
-    x0=[p,gamma, N_bar,beta_bar_opt]
+    x0=[p,gamma, N_bar,beta_bar_opt] #Initialization
     res = least_squares(funn,x0, args=(u, y), verbose=1)
+    p_estimate=res.x[0]
+    gamma_estimate = res.x[1]
+    N_bar_estimate = res.x[2]   
+    beta_bar_estimate = res.x[3]
     u_test = u
     y_test = modell(res.x, u_test)
     fig=plt.figure(figsize=(12,6))
@@ -1042,7 +1063,7 @@ for cnt_district in range(nb_districts):
    # plt.close(fig)
     
 #*****************************************************************************       
-        # Define function for plots:
+    # Define function for plots:
     def make_plots_D_bar(beta_bar,gamma,S_bar_init,H_init,tspan_train,dates,data_totinout):
         S_bar, H, E, L = simu(beta_bar, gamma, S_bar_init, H_init, tspan=[tspan_train[0],len(total_in)])
         nb_subplots =  show_L + show_D_by_day
@@ -1077,7 +1098,16 @@ for cnt_district in range(nb_districts):
             #plt.ticklabel_format(axis="y", style="sci", scilimits=(0,0))
             if cnt_period == nb_periods-1:
                 plt.ylim(bottom=0)
-                
+            print("Statistics for discharged")
+            MAE_train = np.mean(np.abs(new_out[train_t_start:train_t_end]-L[train_t_start:train_t_end]))
+            MAE_test = np.mean(np.abs(new_out[train_t_end:test_t_end]-L[train_t_end:test_t_end]))
+            #****** Mean Absolute Scaled Error (dubious because we make multi-step forecasts, not one-step-ahead forecasts)
+            MASE_train = MAE_train / np.mean(np.abs(new_out[train_t_start+1:train_t_end]-new_out[train_t_start:train_t_end-1]))
+            MASE_test = MAE_test / np.mean(np.abs(new_out[train_t_end+1:test_t_end]-new_out[train_t_end:test_t_end-1]))  # MAE divided by MAE of the prescient naive one-step-ahead predictor (that predicts total_in[t] by total_in[t-1]). Since the decrease is slow, this can be interpreted as the MAE divided by the noise level. If it gets below 1, then the fit is visually excellent. This measure is strongly inspired from Hyndman & Koehler 2006 (https://doi.org/10.1016/j.ijforecast.2006.03.001).
+            #***** Mean Absolute Pourcentage Error
+            #MAPE_train = np.mean(np.abs( (L[train_t_start:train_t_end]-new_out[train_t_start:train_t_end]) / new_out[train_t_start:train_t_end] ))
+            #MAPE_test = np.mean(np.abs( (L[train_t_end:test_t_end]-new_out[train_t_end:test_t_end]) / new_out[train_t_end:test_t_end] ))
+            print("MASE_train", MASE_train, "MASE_test", MASE_test)
         if show_D_by_day:
             D_by_day=p_D_bar*L
             cnt_subplot = cnt_subplot + 1
@@ -1095,6 +1125,10 @@ for cnt_district in range(nb_districts):
             #plt.ticklabel_format(axis="y", style="sci", scilimits=(0,0))
             if cnt_period == nb_periods-1:
                 plt.ylim(bottom=0)
+            print("Statistics for fatalities curve")
+            RMSE_test = np.linalg.norm(D_by_day[train_t_end:test_t_end] - death[train_t_end:test_t_end]) / math.sqrt(test_t_end-train_t_end)
+            print("RMSE_test", RMSE_test)
+    
         return
    
     if show_figures:
