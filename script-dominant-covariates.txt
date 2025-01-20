@@ -1,0 +1,497 @@
+#***************************This code is adapted from su Yun Kang and al., 
+#Article: Fine-scale maps of malaria incidence to inform risk stractification in Laos
+# Malaria Journal, 2024
+rm(list=ls())
+
+library(foreach)
+library(doParallel)
+library(raster)
+library(INLA) 
+library(TMB)
+#library(glmmTMB)
+library(sparseMVN)
+library(Matrix)
+library(gdistance)
+library(malariaAtlas)
+library(sp)
+library(sf)
+library(snakecase)
+library(lubridate)
+library(janitor)
+library(viridis)
+library(RColorBrewer)
+library(rgdal) 
+library(rgeos)
+
+library(tidyverse)
+
+#year<-c(2020:2022)
+#compile("C:/Users/Ousmane Diao/Desktop/Codes/model202022.cpp")
+dyn.load(dynlib("C:/Users/odiao/Desktop/Docs IHI/R codes/model202022"))
+
+#**************************** 2020 **************************
+load("C:/Users/odiao/Desktop/Docs IHI/R codes/output/optrep_total2020.RData")
+parnames <- unique(names(rep$jointPrecision[1,]))
+for (i in 1:length(parnames)) {
+  eval(parse(text=(paste("parameters$",parnames[i]," <- c(rep$par.fixed,rep$par.random)[names(c(rep$par.fixed,rep$par.random))==\"",parnames[i],"\"]",sep=""))))}
+N_sample<-300
+r.draws <- rmvn.sparse(N_sample,unlist(parameters),Cholesky(rep$jointPrecision),prec=TRUE)
+output.list <- list()
+for (i in 1:N_sample) {output.list[[i]] <- obj$report(r.draws[i,])}
+covs_mat <- input.data$static_covariate_matrix
+Ncovariates <- dim(covs_mat)[2]
+covariate.draws1 <- matrix(NA,nrow=Ncovariates,ncol=N_sample)
+for (i in 1:N_sample) {covariate.draws1[,i] <- output.list[[i]]$static_slopes_Pf} 
+
+#****************************** 2021 ***************************
+load("C:/Users/odiao/Desktop/Docs IHI/R codes/output/optrep_total2021.RData")
+parnames <- unique(names(rep$jointPrecision[1,]))
+for (i in 1:length(parnames)) {
+  eval(parse(text=(paste("parameters$",parnames[i]," <- c(rep$par.fixed,rep$par.random)[names(c(rep$par.fixed,rep$par.random))==\"",parnames[i],"\"]",sep=""))))}
+N_sample<-300
+r.draws <- rmvn.sparse(N_sample,unlist(parameters),Cholesky(rep$jointPrecision),prec=TRUE)
+output.list <- list()
+for (i in 1:N_sample) {output.list[[i]] <- obj$report(r.draws[i,])}
+covs_mat <- input.data$static_covariate_matrix
+Ncovariates <- dim(covs_mat)[2]
+covariate.draws2 <- matrix(NA,nrow=Ncovariates,ncol=N_sample)
+for (i in 1:N_sample) {covariate.draws2[,i] <- output.list[[i]]$static_slopes_Pf} 
+
+#********************* 2022 ************************
+load("C:/Users/odiao/Desktop/Docs IHI/R codes/output/optrep_total2022.RData")
+parnames <- unique(names(rep$jointPrecision[1,]))
+for (i in 1:length(parnames)) {
+  eval(parse(text=(paste("parameters$",parnames[i]," <- c(rep$par.fixed,rep$par.random)[names(c(rep$par.fixed,rep$par.random))==\"",parnames[i],"\"]",sep=""))))}
+N_sample<-300
+r.draws <- rmvn.sparse(N_sample,unlist(parameters),Cholesky(rep$jointPrecision),prec=TRUE)
+output.list <- list()
+for (i in 1:N_sample) {output.list[[i]] <- obj$report(r.draws[i,])}
+covs_mat <- input.data$static_covariate_matrix
+Ncovariates <- dim(covs_mat)[2]
+covariate.draws3 <- matrix(NA,nrow=Ncovariates,ncol=N_sample)
+for (i in 1:N_sample) {covariate.draws3[,i] <- output.list[[i]]$static_slopes_Pf} 
+
+
+covariate.draws <- cbind(covariate.draws1, covariate.draws2, covariate.draws3)
+rownames(covariate.draws) <- covariate.names
+# Define the covariate categories
+Urban_rural <- c(covariate.names[1], covariate.names[7], covariate.names[11])
+Vegetation <- c(covariate.names[2], covariate.names[5], covariate.names[12], covariate.names[15])
+Hydrology <- c(covariate.names[3], covariate.names[6], covariate.names[16])
+Temperature <- c(covariate.names[9], covariate.names[13], covariate.names[14])
+Topography <- c(covariate.names[4], covariate.names[8], covariate.names[10])
+
+color_mapping <- c(
+  'Urban_rural' = 'blue',
+  'Temperature' = 'red',
+  'Topography' = 'green',
+  'Vegetation' = 'purple',
+  'Hydrology' = 'cyan'
+)
+
+#########################
+## Positive covariates ##
+#########################
+num_cores <- 5 #50
+registerDoParallel(cores = num_cores)
+
+N_pixels <- bigN
+cov.matrix <- matrix(NA, nrow = N_pixels, ncol = N_sample)
+foreach(i = 1:(N_sample), .combine = "cbind") %dopar% {
+  xtemp <- (t(t(covs_mat)*covariate.draws[,i]))
+  xtemp[xtemp<=0] <- NA
+  apply(xtemp,1,which.max)
+} -> cov.matrix
+
+stopImplicitCluster()
+
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+cov.vector1 <- apply(cov.matrix,1,getmode)
+reference.image[in.country] <- unlist(cov.vector1)
+
+plot(reference.image, col=color_mapping,legend=FALSE, main='Positive covariates')
+legend("topright", legend = names(color_mapping), fill = color_mapping, title = "")
+ggsave("C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Positive/positive_covariates_per_pixel.png")
+
+writeRaster(reference.image, "C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Positive/positive_covariates_per_pixel.tif", overwrite=T)
+
+positive_file<- raster("C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Positive/positive_covariates_per_pixel.tif")
+
+positive_file_rast <- rast(positive_file) 
+positive_file_rast <- terra::as.data.frame(positive_file_rast, xy=TRUE) %>% 
+  mutate(pos = factor(
+    positive_covariates_per_pixel, 
+    levels = c(1, 7, 11, 2, 5, 12, 15, 3, 6, 16, 9, 13, 14, 4, 8, 10),
+    labels = c("Urban/rural", "Urban/rural", "Urban/rural", 
+               "Vegetation", "Vegetation", "Vegetation", "Vegetation", 
+               "Hydrology", "Hydrology", "Hydrology", 
+               "Temperature", "Temperature", "Temperature", 
+               "Topography", "Topography", "Topography")
+  ))
+
+# Plotting the raster data
+ggplot(positive_file_rast, aes(x = x, y = y, fill = pos)) +
+  geom_raster() +
+  scale_fill_manual(
+    values = c(
+      "Urban/rural" = "#1f78b4",  # Customize the colors as desired
+      "Vegetation" = "#33a02c",
+      "Hydrology" = "#6a3d9a",
+      "Temperature" = "#e31a1c",
+      "Topography" = "#ff7f00"
+    ),
+    name = "Category"
+  ) +
+  coord_equal() +
+  labs(
+    title = "Positive dominant covariates per Pixel",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 14)
+  )
+
+
+ggsave("C:/Users/odiao/Desktop/Dom_pos_cov.png")
+
+
+
+
+
+
+library(dplyr)
+library(exactextractr)
+
+positive_predictor <- raster('C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Positive/positive_covariates_per_pixel.tif',
+                             package = 'exactextractr')
+
+# Define your color palette
+covariate_colors <- c(
+  "Accessibility" = 'blue', 
+  "AI" = 'azure',     
+  "Distance to water" = 'cyan', 
+  "Elevation" = 'green',  
+  "Landcover" = 'purple',     
+  "PET" = 'pink',         
+  "Population" = 'orange',
+  "Slope" = 'black',  
+  "TSI" = 'magenta',         
+  "TWI" = 'brown',  
+  "VIIRS" = 'yellow',  
+  "EVI" = 'grey',      
+  "LSTDay" = 'red',         
+  "LSTNight" = 'red2',          
+  "TCB" = 'blueviolet',     
+  "TCW" = 'chartreuse'
+)
+#************************** Regions (Admi 1)
+admin1 <- st_read('C:/Users/odiao/Desktop/Docs IHI/R codes/input/SEN_admin2019_1.shp')
+# Calculate the most dominant covariate amount for each district
+A<-exact_extract(positive_predictor, admin1, append_cols='Name_1', 'mode', progress=FALSE)
+pos_val_admin1 <- A %>%
+  mutate(pos=factor(mode, levels=c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16),
+                    labels = c("Accessibility", "AI","Distance to water",
+                               "Elevation","Landcover","PET","Population",
+                               "Slope","TSI","TWI","VIIRS","EVI",
+                               "LSTDay","LSTNight","TCB","TCW")
+  ))
+
+admin1 <- admin1 %>%
+  mutate(Positive=pos_val_admin1$pos)
+
+ggplot(data=admin1)+
+  geom_sf(aes(fill=Positive))+
+  labs(title="Most common positive covariates by Region", fill="")+
+  scale_fill_manual(values = covariate_colors) +
+  theme_bw()
+ggsave("C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Positive/common_pos_cov_region.png")
+# Exporter en CSV si nécessaire
+colnames(pos_val_admin1) <- c("Region", "Mode", "Covariate")
+write.csv(pos_val_admin1, "C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Positive/summary_table_pos_admin1.csv", row.names = FALSE)
+
+#************************** Districts (Admi 2)
+admin2 <- st_read('C:/Users/odiao/Desktop/Docs IHI/R codes/input/districtsanitaire_79_clean.shp')
+# Calculate the most dominant covariate amount for each district
+A<-exact_extract(positive_predictor, admin2, 'mode', progress=FALSE)
+summar_table <- data.frame(Districts=unique(data_2020$Districts), mode=A)
+pos_val_admin2 <-summar_table %>%
+  mutate(pos=factor(summar_table$mode, levels=c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16),
+                    labels = c("Accessibility", "AI","Distance to water",
+                               "Elevation","Landcover","PET","Population",
+                               "Slope","TSI","TWI","VIIRS","EVI",
+                               "LSTDay","LSTNight","TCB","TCW")
+  ))
+
+admin2 <- admin2 %>%
+  mutate(Positive=pos_val_admin2$pos)
+
+ggplot(data=admin2)+
+  geom_sf(aes(fill=Positive))+
+  labs(title="Most common positive covariates by District", fill="")+
+  scale_fill_manual(values = covariate_colors) +
+  theme_bw()
+ggsave("C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Positive/common_pos_cov_district.png")
+
+# Exporter en CSV si nécessaire
+colnames(pos_val_admin2) <- c("District", "Mode", "Covariate")
+write.csv(pos_val_admin2, "C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Positive/summary_table_pos_admin2.csv", row.names = FALSE)
+
+
+#***************************************************************************
+#Code for dominant negative
+#***************************This code is adapted from su Yun Kang and al., 
+#Article: Fine-scale maps of malaria incidence to inform risk stractification in Laos
+# Malaria Journal, 2024
+rm(list=ls())
+
+library(foreach)
+library(doParallel)
+library(raster)
+library(INLA) 
+library(TMB)
+#library(glmmTMB)
+library(sparseMVN)
+library(Matrix)
+library(gdistance)
+library(malariaAtlas)
+library(sp)
+library(sf)
+library(snakecase)
+library(lubridate)
+library(janitor)
+library(viridis)
+library(RColorBrewer)
+library(rgdal) 
+library(rgeos)
+
+library(tidyverse)
+
+#year<-c(2020:2022)
+#compile("C:/Users/Ousmane Diao/Desktop/Codes/model202022.cpp")
+dyn.load(dynlib("C:/Users/odiao/Desktop/Docs IHI/R codes/model202022"))
+
+
+#**************************** 2020 **************************
+load("C:/Users/odiao/Desktop/Docs IHI/R codes/output/optrep_total2020.RData")
+parnames <- unique(names(rep$jointPrecision[1,]))
+for (i in 1:length(parnames)) {
+  eval(parse(text=(paste("parameters$",parnames[i]," <- c(rep$par.fixed,rep$par.random)[names(c(rep$par.fixed,rep$par.random))==\"",parnames[i],"\"]",sep=""))))}
+N_sample<-300
+r.draws <- rmvn.sparse(N_sample,unlist(parameters),Cholesky(rep$jointPrecision),prec=TRUE)
+output.list <- list()
+for (i in 1:N_sample) {output.list[[i]] <- obj$report(r.draws[i,])}
+covs_mat <- input.data$static_covariate_matrix
+Ncovariates <- dim(covs_mat)[2]
+covariate.draws1 <- matrix(NA,nrow=Ncovariates,ncol=N_sample)
+for (i in 1:N_sample) {covariate.draws1[,i] <- output.list[[i]]$static_slopes_Pf} 
+
+#****************************** 2021 ***************************
+load("C:/Users/odiao/Desktop/Docs IHI/R codes/output/optrep_total2021.RData")
+parnames <- unique(names(rep$jointPrecision[1,]))
+for (i in 1:length(parnames)) {
+  eval(parse(text=(paste("parameters$",parnames[i]," <- c(rep$par.fixed,rep$par.random)[names(c(rep$par.fixed,rep$par.random))==\"",parnames[i],"\"]",sep=""))))}
+N_sample<-300
+r.draws <- rmvn.sparse(N_sample,unlist(parameters),Cholesky(rep$jointPrecision),prec=TRUE)
+output.list <- list()
+for (i in 1:N_sample) {output.list[[i]] <- obj$report(r.draws[i,])}
+covs_mat <- input.data$static_covariate_matrix
+Ncovariates <- dim(covs_mat)[2]
+covariate.draws2 <- matrix(NA,nrow=Ncovariates,ncol=N_sample)
+for (i in 1:N_sample) {covariate.draws2[,i] <- output.list[[i]]$static_slopes_Pf} 
+
+#********************* 2022 ************************
+load("C:/Users/odiao/Desktop/Docs IHI/R codes/output/optrep_total2022.RData")
+parnames <- unique(names(rep$jointPrecision[1,]))
+for (i in 1:length(parnames)) {
+  eval(parse(text=(paste("parameters$",parnames[i]," <- c(rep$par.fixed,rep$par.random)[names(c(rep$par.fixed,rep$par.random))==\"",parnames[i],"\"]",sep=""))))}
+N_sample<-300
+r.draws <- rmvn.sparse(N_sample,unlist(parameters),Cholesky(rep$jointPrecision),prec=TRUE)
+output.list <- list()
+for (i in 1:N_sample) {output.list[[i]] <- obj$report(r.draws[i,])}
+covs_mat <- input.data$static_covariate_matrix
+Ncovariates <- dim(covs_mat)[2]
+covariate.draws3 <- matrix(NA,nrow=Ncovariates,ncol=N_sample)
+for (i in 1:N_sample) {covariate.draws3[,i] <- output.list[[i]]$static_slopes_Pf} 
+
+
+covariate.draws <- cbind(covariate.draws1, covariate.draws2, covariate.draws3)
+rownames(covariate.draws) <- covariate.names
+# Define the covariate categories
+Urban_rural <- c(covariate.names[1], covariate.names[7], covariate.names[11])
+Vegetation <- c(covariate.names[2], covariate.names[5], covariate.names[12], covariate.names[15])
+Hydrology <- c(covariate.names[3], covariate.names[6], covariate.names[16])
+Temperature <- c(covariate.names[9], covariate.names[13], covariate.names[14])
+Topography <- c(covariate.names[4], covariate.names[8], covariate.names[10])
+
+color_mapping <- c(
+  'Urban_rural' = 'blue',
+  'Temperature' = 'red',
+  'Topography' = 'green',
+  'Vegetation' = 'purple',
+  'Hydrology' = 'cyan'
+)
+
+#########################
+## Negative covariates ##
+#########################
+num_cores <- 5 #50
+registerDoParallel(cores = num_cores)
+
+N_pixels <- bigN
+cov.matrix <- matrix(NA, nrow = N_pixels, ncol = N_sample)
+foreach(i = 1:(N_sample), .combine = "cbind") %dopar% {
+  xtemp <- (t(t(covs_mat)*covariate.draws[,i]))
+  xtemp[xtemp<=0] <- NA
+  apply(xtemp,1,which.min)
+} -> cov.matrix
+
+stopImplicitCluster()
+
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+cov.vector1 <- apply(cov.matrix,1,getmode)
+reference.image[in.country] <- unlist(cov.vector1)
+
+plot(reference.image, col=color_mapping,legend=FALSE, main='Negative covariates')
+legend("topright", legend = names(color_mapping), fill = color_mapping, title = "")
+ggsave("C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Negative/negative_covariates_per_pixel.png")
+
+writeRaster(reference.image, "C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Negative/Negative_covariates_per_pixel.tif", overwrite=T)
+
+
+negative_file<- raster("C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Negative/negative_covariates_per_pixel.tif")
+negative_file_rast <- rast(negative_file) 
+negative_file_rast <- terra::as.data.frame(negative_file_rast, xy=TRUE) %>% 
+  mutate(neg = factor(
+    Negative_covariates_per_pixel, 
+    levels = c(1, 7, 11, 2, 5, 12, 15, 3, 6, 16, 9, 13, 14, 4, 8, 10),
+    labels = c("Urban/rural", "Urban/rural", "Urban/rural", 
+               "Vegetation", "Vegetation", "Vegetation", "Vegetation", 
+               "Hydrology", "Hydrology", "Hydrology", 
+               "Temperature", "Temperature", "Temperature", 
+               "Topography", "Topography", "Topography")
+  ))
+
+# Plotting the raster data
+ggplot(negative_file_rast, aes(x = x, y = y, fill = neg)) +
+  geom_raster() +
+  scale_fill_manual(
+    values = c(
+      "Urban/rural" = "#1f78b4",  # Customize the colors as desired
+      "Vegetation" = "#33a02c",
+      "Hydrology" = "#6a3d9a",
+      "Temperature" = "#e31a1c",
+      "Topography" = "#ff7f00"
+    ),
+    name = "Category"
+  ) +
+  coord_equal() +
+  labs(
+    title = "Negative dominant covariates per Pixel",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 14)
+  )
+
+
+ggsave("C:/Users/odiao/Desktop/Dom_neg_cov.png")
+
+
+
+
+
+
+negative_predictor <- raster('C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Negative/Negative_covariates_per_pixel.tif',
+                             package = 'exactextractr')
+
+# Define your color palette
+covariate_colors <- c(
+  "Accessibility" = 'blue', 
+  "AI" = 'azure',     
+  "Distance to water" = 'cyan', 
+  "Elevation" = 'green',  
+  "Landcover" = 'purple',     
+  "PET" = 'pink',         
+  "Population" = 'orange',
+  "Slope" = 'black',  
+  "TSI" = 'magenta',         
+  "TWI" = 'brown',  
+  "VIIRS" = 'yellow',  
+  "EVI" = 'grey',      
+  "LSTDay" = 'red',         
+  "LSTNight" = 'red2',          
+  "TCB" = 'blueviolet',     
+  "TCW" = 'chartreuse'
+)
+
+#************************** Regions (Admi 1)
+admin1 <- st_read('C:/Users/odiao/Desktop/Docs IHI/R codes/input/SEN_admin2019_1.shp')
+
+# Calculate the most dominant covariate amount for each district
+A<-exact_extract(negative_predictor, admin1, append_cols='Name_1', 'mode', progress=FALSE)
+
+neg_val_admin1 <- A %>%
+  mutate(neg=factor(mode, levels=c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16),
+                    labels = c("Accessibility", "AI","Distance to water",
+                               "Elevation","Landcover","PET","Population",
+                               "Slope","TSI","TWI","VIIRS","EVI",
+                               "LSTDay","LSTNight","TCB","TCW")
+  ))
+
+admin1 <- admin1 %>%
+  mutate(Negative=neg_val_admin1$neg)
+
+ggplot(data=admin1)+
+  geom_sf(aes(fill=Negative))+
+  labs(title="Most common negative covariates by Region", fill="")+
+  scale_fill_manual(values = covariate_colors) +
+  theme_bw()
+ggsave("C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Negative/common_neg_cov_region.png")
+# Exporter en CSV si nécessaire
+colnames(neg_val_admin1) <- c("Region", "Mode", "Covariate")
+write.csv(neg_val_admin1, "C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Negative/summary_table_neg_admin1.csv", row.names = FALSE)
+
+
+#************************** Districts (Admi 2)
+admin2 <- st_read('C:/Users/odiao/Desktop/Docs IHI/R codes/input/districtsanitaire_79_clean.shp')
+# Calculate the most dominant covariate amount for each district
+A<-exact_extract(negative_predictor, admin2, 'mode', progress=FALSE)
+summar_table <- data.frame(Districts=unique(data_2020$Districts), mode=A)
+
+neg_val_admin2 <-summar_table %>%
+  mutate(neg=factor(summar_table$mode, levels=c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16),
+                    labels = c("Accessibility", "AI","Distance to water",
+                               "Elevation","Landcover","PET","Population",
+                               "Slope","TSI","TWI","VIIRS","EVI",
+                               "LSTDay","LSTNight","TCB","TCW")
+  ))
+
+admin2 <- admin2 %>%
+  mutate(Negative=neg_val_admin2$neg)
+
+ggplot(data=admin2)+
+  geom_sf(aes(fill=Negative))+
+  labs(title="Most common negative covariates by District", fill="")+
+  scale_fill_manual(values = covariate_colors) +
+  theme_bw()
+ggsave("C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Negative/common_neg_cov_district.png")
+# Exporter en CSV si nécessaire
+colnames(neg_val_admin2) <- c("District", "Mode", "Covariate")
+write.csv(neg_val_admin2, "C:/Users/odiao/Desktop/Docs IHI/R codes/Plots Influential_cov_Senegal/Negative/summary_table_neg_admin2.csv", row.names = FALSE)

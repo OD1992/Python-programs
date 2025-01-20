@@ -1,0 +1,682 @@
+---
+title: "Visualization of the monthly maps 2020 to 2022"
+author: ' Ousmane Diao'
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.align = 'center', cache = TRUE)
+options(scipen = 999)
+```
+
+```{r}
+rm(list=ls())
+#gc()
+```
+
+```{r libraries}
+library(sf)
+library(snakecase)
+library(lubridate)
+library(janitor)
+library(tidyverse)
+library(viridis)
+library(RColorBrewer)
+library(ggpubr) # For combining multiple plots
+pkg<-c("raster","INLA","TMB","sparseMVN","Matrix","rgdal","gdistance",
+       "malariaAtlas","sp","rgeos","foreach","doParallel")
+for (i in 1: length(pkg)){library(pkg[[i]],character.only = TRUE)}
+
+
+library(exactextractr)
+library(tidyterra)
+```
+
+# Introduction
+We are presenting the output from the model with Senegal data. This model is a Baysian framework to predict the malaria cases in pixel level using routine surveillance data from health facilities and considering environmentales covariates, population density, catchment population and treatment seeking probability. 
+```{r}
+# Load data
+outputpath <- "/home/odiao/Output_11_20_2024/"
+
+coordinates <- read_csv("/mnt/efs/stratification/CountryFolders/Senegal//Projects/1.0 Risk Map/2022/01 Raw data/Senegal data for MAP/Org Unit - Corrected Coordinates2.csv") %>% 
+  dplyr::select(adm1 = `Org Unit Name Level 2`, adm2 = `Org Unit Name Level 3`,
+         hf = `Org Unit Short Name`, lat = Latitude, long = Longitude) %>% 
+  mutate(adm1 = snakecase::to_snake_case(adm1),
+         adm2 = snakecase::to_snake_case(adm2),
+         hf = snakecase::to_snake_case(hf),
+         unique_id = paste("sen",row_number(), sep="_"))
+
+bnd <- st_read("/mnt/efs/stratification/CountryFolders/Senegal/Common files/Shapefiles/Shapes files 79 Districts VF/Shapes files 79 Districts VF/districtsanitaire_79_clean.shp")
+```
+
+# Analyses
+
+```{r}
+data_2020 <- readxl::read_xlsx("/mnt/efs/stratification/CountryFolders/Senegal//Projects/1.0 Risk Map/2022/01 Raw data/PNLPdata/Extraction Data Paludisme DS FS DHIS2 2020_2021_2022.xlsx", sheet = 1)
+data_2021 <- readxl::read_xlsx("/mnt/efs/stratification/CountryFolders/Senegal//Projects/1.0 Risk Map/2022/01 Raw data/PNLPdata/Extraction Data Paludisme DS FS DHIS2 2020_2021_2022.xlsx", sheet = 2)
+data_2022 <- readxl::read_xlsx("/mnt/efs/stratification/CountryFolders/Senegal//Projects/1.0 Risk Map/2022/01 Raw data/PNLPdata/Extraction Data Paludisme DS FS DHIS2 2020_2021_2022.xlsx", sheet = 3)
+
+```
+
+
+```{r}
+###########################################
+# Step 1: Read in new case data
+###########################################
+
+# Inspect sample rows:
+# head(coordinates)
+
+data_2020_2022 <- bind_rows(data_2020, data_2021, data_2022) %>%
+  janitor::clean_names() %>%
+  separate(mois, into = c('monthname', 'year'), sep = " ") %>%
+  mutate(month = factor(monthname, 
+                        levels = c("Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre")),
+         month = as.numeric(month),
+         year = as.numeric(year),
+         year.month= paste(year, month, sep = ".")) %>%
+  mutate(adm1 = snakecase::to_snake_case(regions),
+         adm2 = snakecase::to_snake_case(districts),
+         hf = snakecase::to_snake_case(formation_sanitaire),
+         conf_u5 = cas_confirmes_feminin_0_4_ans + cas_confirmes_masculin_0_4_ans,
+         conf_ov5 = cas_confirmes_feminin_5_ans_excluant_les_femmes_enceintes + cas_confirmes_masculin_5_ans_excluant_les_femmes_enceintes,
+         pres_all = NA,
+         pres_u5 = NA,
+         pres_ov5 = NA,
+         pres_preg = NA) %>%
+  dplyr::select(adm1, adm2, hf, month, year, year.month, 
+                allout_all = total_consultants_toutes_affections_confondues,
+                allout_ov5 = consultants_toutes_affections_confondues_5_ans_excluant_les_femmes_enceintes,
+                allout_preg = consultants_toutes_affections_confondues_femme_enceinte,
+                allout_u5 = consultants_toutes_affections_confondues_0_4_ans,
+                conf_all = total_cas_confirmes, 
+                conf_ov5,
+                conf_preg = cas_confirmes_femme_enceinte,
+                conf_u5,
+                pres_all, pres_ov5, pres_preg, pres_u5,
+                test_all = total_tests_tdr_realises,
+                test_ov5 = tests_tdr_realises_5_ans_excluant_les_femmes_enceintes,
+                test_preg = tests_tdr_realises_femme_enceinte,
+                test_u5 = tests_tdr_realises_0_4_ans,
+                conf_f_all = total_cas_confirmes_feminin,
+                conf_f_ov5 = cas_confirmes_feminin_5_ans_excluant_les_femmes_enceintes,
+                conf_f_u5 = cas_confirmes_feminin_0_4_ans,
+                conf_m_all = total_cas_confirmes_masculin,
+                conf_m_ov5 = cas_confirmes_masculin_5_ans_excluant_les_femmes_enceintes,
+                conf_m_u5 = cas_confirmes_masculin_0_4_ans,
+                susp_all = total_cas_suspect,
+                susp_ov5 = cas_suspect_5_ans_excluant_les_femmes_enceintes,
+                susp_preg = cas_suspect_femme_enceinte,
+                susp_u5 = cas_suspect_0_4_ans) %>%
+  left_join(coordinates, by = c("adm1","adm2","hf"))
+```
+
+```{r}
+###########################################
+# Step 3: Summarize coverage of coordinates
+###########################################
+# Count total unique facilities
+facilities_total <- data_2020_2022 %>%
+  distinct(adm1, adm2, hf) %>%
+  nrow()
+
+# Count how many have coordinates
+facilities_with_coords <- data_2020_2022 %>%
+  distinct(adm1, adm2, hf, lat, long) %>%
+  filter(!is.na(lat)) %>%
+  nrow()
+
+# Facilities without coordinates
+facilities_without_coords <- facilities_total - facilities_with_coords
+
+# Print summary:
+cat("Total number Health facilities: ", facilities_total, "\n")
+cat("Total number of facilities with valide coordinates: ", facilities_with_coords, "\n")
+cat("Total number of facilities without coordinates: ", facilities_without_coords, "\n")
+```
+
+
+### Population denstiy map
+```{r}
+pop <- rast("/mnt/efs/stratification/CountryFolders/Senegal/Common files/Population/SEN_population_v1_0_gridded_1km.tif")%>% 
+  crop(bnd) %>% mask(bnd) #without: %>% crop(bnd) %>% mask(bnd)
+
+ggplot()+ # with: bnd
+  geom_sf(fill = 'grey20')+
+  geom_spatraster(data = pop,aes(fill = layer), na.rm = TRUE)+
+  scale_fill_distiller(palette = "RdYlGn",na.value = 'transparent',trans="log10",
+                       breaks = scales::trans_breaks("log10", function(x) 10^x),
+                       labels = scales::trans_format("log10", scales::math_format(10^.x)))+
+  coord_sf(crs = 4326)+
+  theme_void()+
+  labs(title = "Population - GRID3 2020",
+    fill = "Pop",size = 18)+
+  theme(#legend.key.width = unit(2, "cm"), legend.position = 'bottom'
+    plot.title = element_text(size = 18, face = "bold"),   # Title size
+    plot.caption = element_text(size = 16),               # Caption size
+    legend.text = element_text(size = 16),                # Legend text size
+    legend.title = element_text(size = 18, face = "bold"), # Legend title size
+    # Adjust legend position and key size
+    legend.key.width = unit(1.5, "cm"), 
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = 'bottom')
+```
+
+
+### Treatment seeking propability map
+```{r TS}
+ts <- rast("/mnt/efs/stratification/CountryFolders/Senegal/Projects/1.0 Risk Map/2022/03 Additional files (optional)/Treatment seeking/ts_senegal_mean0_2023-03-29.tif") %>% 
+  crop(bnd) %>% mask(bnd)
+
+ggplot()+
+  geom_spatraster(data = ts,aes(fill = layer), na.rm = TRUE)+
+  scale_fill_viridis(option = "D",na.value = 'transparent')+
+  coord_sf(crs = 4326)+
+  theme_void()+
+  labs(title = "Treatment seeking probability",
+       fill = "TS prob",
+       #caption = "dots represent a geolocated health facility"
+       )+
+  theme(#legend.key.width = unit(2, "cm"), legend.position = 'bottom'
+    plot.title = element_text(size = 18, face = "bold"),   # Title size
+    plot.caption = element_text(size = 18),               # Caption size
+    legend.text = element_text(size = 18),                # Legend text size
+    legend.title = element_text(size = 18, face = "bold"), # Legend title size
+    # Adjust legend position and key size
+    legend.key.width = unit(1.5, "cm"), 
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = 'bottom')
+#ggsave(paste0(outputpath, "ts_HF_OD.png"))
+```
+
+
+### Travel time minutes map
+```{r TT}
+tt <- rast("/mnt/efs/stratification/CountryFolders/Senegal/Projects/1.0 Risk Map/2022/03 Additional files (optional)/Treatment seeking/Time_to_HF/2023-03-29/HF.accessibility.tif") %>% 
+  crop(bnd) %>% mask(bnd)
+
+ggplot()+
+  geom_spatraster(data = tt,aes(fill = layer), na.rm = TRUE)+
+  geom_point(data = coordinates, mapping = aes(x = long, y = lat), size = 0.6, col = 'red3', pch=21, show.legend = TRUE)+
+  scale_fill_viridis(option = "D",na.value = 'transparent' )+
+  coord_sf(crs = 4326)+
+  theme_void()+
+  labs(title = "Travel time (in minutes) to nearest HF",
+    fill = "Tt min",
+       #caption = "dots represent a geolocated health facility",size = 18
+    )+
+  #theme(legend.key.width = unit(2, "cm"), legend.position = 'bottom')
+  theme(# Increase title, caption, and legend text size
+    plot.title = element_text(size = 18, face = "bold"),   # Title size
+    plot.caption = element_text(size = 18),               # Caption size
+    legend.text = element_text(size = 18),                # Legend text size
+    legend.title = element_text(size = 18, face = "bold"), # Legend title size
+    # Adjust legend position and key size
+    legend.key.width = unit(1.5, "cm"), 
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = 'bottom')
+ 
+#ggsave(paste0(outputpath, "tt_HF_OD.png"))
+```
+
+
+
+```{r input-data}
+# Suppress progress bar
+options(rasterProgress = 'none')
+#Read the tif files contenant the predicted median values
+# List raster files
+raster_files <- list.files(outputpath, 
+  pattern = 'posterior_median_cases_total_per_1000_PYO.tif$', full.names = TRUE)
+
+
+pop_dat <- read_csv("/mnt/efs/stratification/CountryFolders/Senegal//Projects/1.0 Risk Map/2022/01 Raw data/PNLPdata/Population DS 2015 _ 2023.csv") %>% 
+  mutate(adm1 = str_to_title(RM),
+         adm2 = str_to_title(Districts)
+  ) %>% 
+  filter(!is.na(RM)) %>% 
+  mutate(adm2 = case_when(adm2 == "Mbao" ~ "MBAO",
+                          TRUE ~ as.character(adm2))) %>% 
+  dplyr::select(-RM, -Districts) %>% 
+  pivot_longer("Populations \n2015":"Populations \n2023", names_to = "year", values_to = "population") %>% 
+  mutate(year = str_remove(year, "Populations \n") %>% as.numeric()) %>% 
+  filter(year >= 2020 & year < 2023)
+```
+
+
+### Monthly maps in 2020
+```{r Incidence maps 2020, fig.width=14, fig.height=8}
+pred_inc_ras_2020 <- rast(raster_files[1:12])
+names(pred_inc_ras_2020) <- c("pred_01", "pred_02","pred_03","pred_04",
+                         "pred_05","pred_06","pred_07","pred_08",
+                         "pred_09","pred_10", "pred_11","pred_12")
+#plot(pred_inc_ras)
+#summary(pred_inc_ras) #This can help to define breaks
+
+pred_inc_2020 <- terra::as.data.frame(pred_inc_ras_2020, xy=TRUE) %>% 
+            pivot_longer(cols=names(pred_inc_ras_2020), names_to = "month", values_to = "inc") %>% 
+            mutate(month = str_remove(month, 'pred_'),
+                   month = as.numeric(month)) %>% 
+            mutate(inc_cut = cut(inc, 
+                                 breaks = c(0,3, 5, 7, 10, 15, 20, 30, 40, 50, 100, 150, 200, 250, 300, 2500),
+                                 labels =c("<3", "3-5", "5-7", "7-10", "10-15", "15-20", "20-30", "30-40",
+                                           "40-50", "50-100", "100-150", "150-200", "200-250", "250-300", ">300"),
+                                  #breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                                  #labels <- c("<1", "1-3","1-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                                 include.lowest = TRUE))
+sink(tempfile())  # Redirect console output to a temporary file
+pred_2020 <- exact_extract(pred_inc_ras_2020, bnd, 'mean') 
+sink()  # Reset console output
+bnd_2020  <- bind_cols(bnd, pred_2020)
+admin0 <- st_union(bnd_2020)
+
+bnd2_2020 <- pivot_longer(bnd_2020, cols = mean.pred_01:mean.pred_12, names_to = 'month', values_to = 'inc') %>% 
+  select(adm2 = NAME, month, inc) %>% 
+  mutate(month = str_remove(month, 'mean.pred_') %>% as.numeric(),
+         inc_cut = cut(inc, 
+                       breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                       labels <- c("<1", "1-3","3-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                        #breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                        #labels <- c("<1", "1-3","3-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                       include.lowest = TRUE)) %>% 
+    left_join(pop_dat) %>% 
+  mutate(predicted_cases = inc*population/(1000*12)) %>% 
+  select(adm1, adm2, month, predicted_cases, population, incidence_PMO = inc, inc_cut) #PMO:Person Month Observed
+
+#write_csv(st_drop_geometry(bnd2) %>% select(-inc_cut), "/home/odiao/Plots_months_files/Output/predicted_incidence_monthly_2020.csv")
+#st_write(bnd2 %>% select(-inc_cut), "/home/odiao/Plots_months_files/Output/predicted_incidence_monthly_2020.shp")
+
+ggplot(bnd2_2020)+
+  geom_sf(mapping = aes(fill = incidence_PMO))+ #inc: modified by OD
+  facet_wrap(~month)+
+  #scale_fill_viridis(option = "B", na.value = 'transparent', direction = -1)+
+  scale_fill_distiller(palette = "RdYlGn")+
+  theme_void()+
+  labs(title = "Predicted Incidence in 2020", fill = "Cases per 1000 PMO")+
+  theme(
+    strip.text = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),   # Title size
+        plot.caption = element_text(size = 16),               # Caption size
+        legend.text = element_text(size = 16),                # Legend text size
+        legend.title = element_text(size = 16, face = "bold"), # Legend title size
+        legend.position = 'bottom',
+        legend.key.width = unit(2., "cm"),                  # Largeur des clés
+        legend.key.height = unit(0.5, "cm") 
+  )
+#ggsave("06 Presentation materials/Maps/predicted_inc_district_viridis.png")
+ggsave("/home/odiao/Plots_months_files/Output/2020_predicted_inc_monthly_district_viridis.png")
+```
+
+
+
+
+```{r fig-dev_2020, fig.width=14, fig.height=8}
+pred_inc_monthly_2020 <- terra::as.data.frame(pred_inc_ras_2020, xy = TRUE) %>% 
+  pivot_longer(cols = names(pred_inc_ras_2020), names_to = "month", values_to = "inc") %>% 
+  mutate(
+    month = str_remove(month, 'pred_') %>% as.numeric()
+  ) %>%
+  group_by(x, y) %>% 
+  mutate(
+    annual_avg = mean(inc, na.rm = TRUE),       # Calculate annual average per location
+    monthly_dev = inc - annual_avg             # Calculate monthly deviations
+  ) %>% 
+  ungroup()                                    # Ungroup for further operations
+
+pred_inc_monthly_2020 <- pred_inc_monthly_2020 %>% 
+  mutate(
+    inc_cut = cut(
+      inc, 
+      breaks <- c(-300, -200, -100, -50, 1, 50, 100, 300, 1200),
+      labels <- c("< -200", "-200 to -100", "-100 to -50", "-50 to 1", "1 to 50", "50 to 100","100 to 300", "> 300"),
+      include.lowest = TRUE
+    )
+  )
+
+#Plot categorized incidence
+ggplot(pred_inc_monthly_2020, aes(x = x, y = y, fill = inc_cut)) +
+  geom_tile() +
+  scale_fill_brewer(palette = "RdYlBu", direction = -1) +
+  coord_equal() +
+  theme_minimal() +
+  labs(
+    title = "Deviation from annual average (2020)",
+    x = "Longitude",
+    y = "Latitude",
+    fill = "Deviation"
+  ) +
+  facet_wrap(~ month, ncol = 4)+
+  theme(strip.text = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),   # Title size
+        plot.caption = element_text(size = 12),               # Caption size
+        axis.title.x = element_text(size = 16),  # X-axis label size
+        axis.title.y = element_text(size = 16),  # Y-axis label size
+        axis.text.x = element_text(size = 14),   # X-axis tick size
+        axis.text.y = element_text(size = 14),   # Y-axis tick size
+        legend.text = element_text(size = 14),                # Legend text size
+        legend.title = element_text(size = 14, face = "bold"), # Legend title size
+        legend.position = 'bottom',
+        legend.key.width = unit(2., "cm"),                  # Largeur des clés
+        legend.key.height = unit(0.5, "cm") 
+  )
+ggsave("/home/odiao/Plots_months_files/Output/2020_deviation_inc_monthly_viridis.png")
+```
+
+
+### Monthly maps in 2021
+```{r Incidence maps 2021, fig.width=14, fig.height=8}
+pred_inc_ras_2021 <- rast(raster_files[13:24])
+names(pred_inc_ras_2021) <- c("_2021_pred_01", "_2021_pred_02","_2021_pred_03","_2021_pred_04",
+                         "_2021_pred_05","_2021_pred_06","_2021_pred_07","_2021_pred_08",
+                         "_2021_pred_09","_2021_pred_10", "_2021_pred_11","_2021_pred_12")
+#plot(pred_inc_ras)
+#summary(pred_inc_ras) #This can help to define breaks
+
+pred_inc_2021 <- terra::as.data.frame(pred_inc_ras_2021, xy=TRUE) %>% 
+            pivot_longer(cols=names(pred_inc_ras_2021), names_to = "month", values_to = "inc") %>% 
+            mutate(month = str_remove(month, '_2021_pred_'),
+                   month = as.numeric(month)
+                   ) %>% 
+            mutate(inc_cut = cut(inc, 
+                                 breaks = c(0,3, 5, 7, 10, 15, 20, 30, 40, 50, 100, 150, 200, 250, 300, 2500),
+                                 labels =c("<3", "3-5", "5-7", "7-10", "10-15", "15-20", "20-30", "30-40",
+                                           "40-50", "50-100", "100-150", "150-200", "200-250", "250-300", ">300"),
+                                  #breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                                  #labels <- c("<1", "1-3","1-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                                 include.lowest = TRUE))
+sink(tempfile())  # Redirect console output to a temporary file
+pred_2021 <- exact_extract(pred_inc_ras_2021, bnd, 'mean') 
+sink()  # Reset console output
+bnd_2021 <- bind_cols(bnd, pred_2021)
+admin0 <- st_union(bnd_2021)
+
+bnd2_2021 <- pivot_longer(bnd_2021, cols =mean._2021_pred_01:mean._2021_pred_12 , names_to = 'month', values_to = 'inc') %>% 
+  select(adm2 = NAME, month, inc) %>% 
+  mutate(month = str_remove(month, 'mean._2021_pred_') %>% as.numeric(),
+         inc_cut = cut(inc, 
+                       breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                        labels <- c("<1", "1-3","3-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                        #breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                        #labels <- c("<1", "1-3","3-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                       include.lowest = TRUE)) %>% 
+    left_join(pop_dat) %>% 
+  mutate(predicted_cases = inc*population/(1000*12)) %>% 
+  select(adm1, adm2, month, predicted_cases, population, incidence_PMO = inc, inc_cut) #PMO:Person Month Observed
+
+#write_csv(st_drop_geometry(bnd2) %>% select(-inc_cut), "/home/odiao/Plots_months_files/Output/predicted_incidence_monthly_2021.csv")
+#st_write(bnd2 %>% select(-inc_cut), "/home/odiao/Plots_months_files/Output/predicted_incidence_monthly_2021.shp")
+
+ggplot(bnd2_2021)+
+  geom_sf(mapping = aes(fill = incidence_PMO))+ #inc: modified by OD
+  facet_wrap(~month)+
+  #scale_fill_viridis(option = "B", na.value = 'transparent', direction = -1)+
+  scale_fill_distiller(palette = "RdYlGn")+
+  theme_void()+
+  labs(title = "Predicted Incidence in 2021", fill = "Cases per 1000 PMO")+
+  theme(
+    strip.text = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),   # Title size
+        plot.caption = element_text(size = 16),               # Caption size
+        legend.text = element_text(size = 16),                # Legend text size
+        legend.title = element_text(size = 16, face = "bold"), # Legend title size
+        legend.position = 'bottom',
+        legend.key.width = unit(2., "cm"),                  # Largeur des clés
+        legend.key.height = unit(0.5, "cm") 
+  )
+#ggsave("06 Presentation materials/Maps/predicted_inc_district_viridis.png")
+ggsave("/home/odiao/Plots_months_files/Output/2021_predicted_inc_monthly_district_viridis.png")
+```
+ 
+```{r fig-dev_2021, fig.width=14, fig.height=8}
+# Reshape and calculate the annual average
+pred_inc_monthly_2021 <- terra::as.data.frame(pred_inc_ras_2021, xy = TRUE) %>% 
+  pivot_longer(cols = names(pred_inc_ras_2021), names_to = "month", values_to = "inc") %>% 
+  mutate(
+    month = str_remove(month, '_2021_pred_') %>% as.numeric()
+  ) %>%
+  group_by(x, y) %>% 
+  mutate(
+    annual_avg = mean(inc, na.rm = TRUE),       # Calculate annual average per location
+    monthly_dev = inc - annual_avg             # Calculate monthly deviations
+  ) %>% 
+  ungroup()                                    # Ungroup for further operations
+
+pred_inc_monthly_2021 <- pred_inc_monthly_2021 %>% 
+  mutate(
+    inc_cut = cut(
+      inc, 
+      breaks <- c(-300, -200, -100, -50, 1, 50, 100, 300, 1200),
+      labels <- c("< -200", "-200 to -100", "-100 to -50", "-50 to 1", "1 to 50", "50 to 100","100 to 300", "> 300"),
+      include.lowest = TRUE
+    )
+  )
+
+#Plot categorized incidence
+ggplot(pred_inc_monthly_2021, aes(x = x, y = y, fill = inc_cut)) +
+  geom_tile() +
+  scale_fill_brewer(palette = "RdYlBu", direction = -1) +
+  coord_equal() +
+  theme_minimal() +
+  labs(
+    title = "Deviation from annual average (2021)",
+    x = "Longitude",
+    y = "Latitude",
+    fill = "Deviation"
+  ) +
+  facet_wrap(~ month, ncol = 4)+
+  theme(strip.text = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),   # Title size
+        plot.caption = element_text(size = 12),               # Caption size
+        axis.title.x = element_text(size = 16),  # X-axis label size
+        axis.title.y = element_text(size = 16),  # Y-axis label size
+        axis.text.x = element_text(size = 14),   # X-axis tick size
+        axis.text.y = element_text(size = 14),   # Y-axis tick size
+        legend.text = element_text(size = 14),                # Legend text size
+        legend.title = element_text(size = 14, face = "bold"), # Legend title size
+        legend.position = 'bottom',
+        legend.key.width = unit(2., "cm"),                  # Largeur des clés
+        legend.key.height = unit(0.5, "cm") 
+  )
+
+ggsave("/home/odiao/Plots_months_files/Output/2021_deviation_inc_monthly_viridis.png")
+```
+
+### Monthly maps in 2022
+```{r Incidence maps 2022, fig.width=14, fig.height=8}
+pred_inc_ras_2022 <- rast(raster_files[25:36])
+names(pred_inc_ras_2022) <- c("_2022_pred_01", "_2022_pred_02","_2022_pred_03","_2022_pred_04",
+                         "_2022_pred_05","_2022_pred_06","_2022_pred_07","_2022_pred_08",
+                         "_2022_pred_09","_2022_pred_10", "_2022_pred_11","_2022_pred_12")
+#plot(pred_inc_ras)
+#summary(pred_inc_ras) #This can help to define breaks
+
+pred_inc_2022 <- terra::as.data.frame(pred_inc_ras_2022, xy=TRUE) %>% 
+            pivot_longer(cols=names(pred_inc_ras_2022), names_to = "month", values_to = "inc") %>% 
+            mutate(month = str_remove(month, '_2022_pred_'),
+                   month = as.numeric(month)
+                   ) %>% 
+            mutate(inc_cut = cut(inc, 
+                                 breaks = c(0,3, 5, 7, 10, 15, 20, 30, 40, 50, 100, 150, 200, 250, 300, 2500),
+                                 labels =c("<3", "3-5", "5-7", "7-10", "10-15", "15-20", "20-30", "30-40",
+                                           "40-50", "50-100", "100-150", "150-200", "200-250", "250-300", ">300"),
+                                  #breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                                  #labels <- c("<1", "1-3","1-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                                 include.lowest = TRUE))
+sink(tempfile())  # Redirect console output to a temporary file
+pred_2022 <- exact_extract(pred_inc_ras_2022, bnd, 'mean') 
+sink()  # Reset console output
+bnd_2022 <- bind_cols(bnd, pred_2022)
+admin0 <- st_union(bnd_2022)
+
+bnd2_2022 <- pivot_longer(bnd_2022, cols = mean._2022_pred_01:mean._2022_pred_12, names_to = 'month', values_to = 'inc') %>% 
+  select(adm2 = NAME, month, inc) %>% 
+  mutate(month = str_remove(month, 'mean._2022_pred_') %>% as.numeric(),
+         inc_cut = cut(inc, 
+                       breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                        labels <- c("<1", "1-3","3-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                        #breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                        #labels <- c("<1", "1-3","3-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                       include.lowest = TRUE)) %>% 
+    left_join(pop_dat) %>% 
+  mutate(predicted_cases = inc*population/(1000*12)) %>% 
+  select(adm1, adm2, month, predicted_cases, population, incidence_PMO = inc, inc_cut) #PMO:Person Month Observed
+
+#write_csv(st_drop_geometry(bnd2) %>% select(-inc_cut), "/home/odiao/Plots_months_files/Output/predicted_incidence_monthly_2022.csv")
+#st_write(bnd2 %>% select(-inc_cut), "/home/odiao/Plots_months_files/Output/predicted_incidence_monthly_2022.shp")
+
+ggplot(bnd2_2022)+
+  geom_sf(mapping = aes(fill = incidence_PMO))+ #inc: modified by OD
+  facet_wrap(~month)+
+  #scale_fill_viridis(option = "B", na.value = 'transparent', direction = -1)+
+  scale_fill_distiller(palette = "RdYlGn")+
+  theme_void()+
+  labs(title = "Predicted Incidence in 2022", fill = "Cases per 1000 PMO")+
+  theme(
+    strip.text = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),   # Title size
+        plot.caption = element_text(size = 16),               # Caption size
+        legend.text = element_text(size = 16),                # Legend text size
+        legend.title = element_text(size = 16, face = "bold"), # Legend title size
+        legend.position = 'bottom',
+        legend.key.width = unit(2., "cm"),                  # Largeur des clés
+        legend.key.height = unit(0.5, "cm") 
+  )
+#ggsave("06 Presentation materials/Maps/predicted_inc_district_viridis.png")
+ggsave("/home/odiao/Plots_months_files/Output/2022_predicted_inc_monthly_district_viridis.png")
+```
+
+
+```{r fig-dev_2022, fig.width=14, fig.height=8}
+# Reshape and calculate the annual average
+pred_inc_monthly_2022 <- terra::as.data.frame(pred_inc_ras_2022, xy = TRUE) %>% 
+  pivot_longer(cols = names(pred_inc_ras_2022), names_to = "month", values_to = "inc") %>% 
+  mutate(
+    month = str_remove(month, '_2022_pred_') %>% as.numeric()
+  ) %>%
+  group_by(x, y) %>% 
+  mutate(
+    annual_avg = mean(inc, na.rm = TRUE),       # Calculate annual average per location
+    monthly_dev = inc - annual_avg             # Calculate monthly deviations
+  ) %>% 
+  ungroup()                                    # Ungroup for further operations
+
+pred_inc_monthly_2022 <- pred_inc_monthly_2022 %>% 
+  mutate(
+    inc_cut = cut(
+      inc, 
+      breaks <- c(-300, -200, -100, -50, 1, 50, 100, 300, 1200),
+      labels <- c("< -200", "-200 to -100", "-100 to -50", "-50 to 1", "1 to 50", "50 to 100","100 to 300", "> 300"),
+      include.lowest = TRUE
+    )
+  )
+
+#Plot categorized incidence
+ggplot(pred_inc_monthly_2022, aes(x = x, y = y, fill = inc_cut)) +
+  geom_tile() +
+  scale_fill_brewer(palette = "RdYlBu", direction = -1) +
+  coord_equal() +
+  theme_minimal() +
+  labs(
+    title = "Deviation from annual average (2022)",
+    x = "Longitude",
+    y = "Latitude",
+    fill = "Deviation"
+  ) +
+  facet_wrap(~ month, ncol = 4)+
+theme(strip.text = element_text(size = 16, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold"),   # Title size
+      plot.caption = element_text(size = 12),               # Caption size
+      axis.title.x = element_text(size = 16),  # X-axis label size
+      axis.title.y = element_text(size = 16),  # Y-axis label size
+      axis.text.x = element_text(size = 14),   # X-axis tick size
+      axis.text.y = element_text(size = 14),   # Y-axis tick size
+      legend.text = element_text(size = 14),                # Legend text size
+      legend.title = element_text(size = 14, face = "bold"), # Legend title size
+      legend.position = 'bottom',
+      legend.key.width = unit(2., "cm"),                  # Largeur des clés
+      legend.key.height = unit(0.5, "cm") 
+  )
+
+#ggsave("06 Presentation materials/Maps/predicted_inc_district_viridis.png")
+ggsave("/home/odiao/Plots_months_files/Output/2022_deviation_inc_monthly_district_viridis.png")
+```
+
+
+#### Data grouped by calendar month and calculate the median
+```{r fig-group_month, fig.width=14, fig.height=8}
+# Extract year and month from file names using regex
+raster_info <- data.frame(
+  file = raster_files,
+  year = sub("^(\\d{4})\\.\\d{2}_posterior_median_cases_total_per_1000_PYO\\.tif$", "\\1", basename(raster_files)),
+  month = sub("^\\d{4}\\.(\\d{2})_posterior_median_cases_total_per_1000_PYO\\.tif$", "\\1", basename(raster_files))
+)
+
+# Initialize a list to store monthly medians
+monthly_medians <- list()
+
+# Loop through each month
+for (month in unique(raster_info$month)) {
+  # Subset raster files for the current month
+  monthly_files <- raster_info$file[raster_info$month == month]
+  # Stack the rasters for the current month
+  raster_stack <- stack(monthly_files)
+  # Calculate the pixel-wise median
+  monthly_median <- calc(raster_stack, median, na.rm = TRUE)
+  # Store the result
+  monthly_medians[[month]] <- monthly_median
+}
+# Combine all monthly medians into a single raster stack (optional)
+all_monthly_medians <- stack(monthly_medians)
+
+
+# Write output rasters 
+#for (i in seq_along(monthly_medians)) {
+ # writeRaster(monthly_medians[[i]], 
+  #            filename = file.path("/home/odiao/Plots_months_files/Output/median_month_", names(monthly_medians)[i], #".tif"), 
+ #             overwrite = TRUE)
+#}
+
+sink(tempfile())  # Redirect console output to a temporary file
+pred_all_monthly_medians <- exact_extract(all_monthly_medians, bnd, 'mean') 
+sink()  # Reset console output
+bnd_all_monthly_medians <- bind_cols(bnd, pred_all_monthly_medians)
+admin0 <- st_union(bnd)
+
+bnd2_all_monthly_medians <- pivot_longer(bnd_all_monthly_medians, cols = names(pred_all_monthly_medians), names_to = 'month', values_to = 'inc') %>% 
+  select(adm2 = NAME, month, inc) %>% 
+  mutate(
+    month = str_remove(month, 'mean.X'), 
+    month = as.numeric(month),
+         inc_cut = cut(inc, 
+                        breaks = c(0, 1,3,5,10,50,100,200,300,1600),
+                        labels <- c("<1", "1-3","3-5", "5-10", "10-50", "50-100", "100-200", "200-300", ">300"),
+                       include.lowest = TRUE)) %>% 
+    left_join(pop_dat) %>% 
+  mutate(predicted_cases = inc*population/(1000*12)) %>% 
+  select(adm1, adm2, month, predicted_cases, population, incidence_PMO = inc, inc_cut) #PMO:Person Month Observed
+ggplot(bnd2_all_monthly_medians)+
+  geom_sf(mapping = aes(fill = incidence_PMO))+ 
+  facet_wrap(~month)+
+  #scale_fill_viridis(option = "B", na.value = 'transparent', direction = -1)+
+  scale_fill_distiller(palette = "RdYlGn")+
+  theme_void()+
+  labs(title = "Monthly Median of Incidence in 2020:2022", fill = "Cases per 1000 PMO")+
+  theme(
+    strip.text = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),   # Title size
+        plot.caption = element_text(size = 16),               # Caption size
+        legend.text = element_text(size = 16),                # Legend text size
+        legend.title = element_text(size = 16, face = "bold"), # Legend title size
+        legend.position = 'bottom',
+        legend.key.width = unit(2., "cm"),                  
+        legend.key.height = unit(0.5, "cm") 
+  )
+ggsave("/home/odiao/Plots_months_files/Output/2020_2021_2022_median_inc_monthly_district_viridis.png")
+```
+
+
+# Conclusion
+We have prodcuced monthly maps from 2020 to 2022. These maps show the variability and the intensity of malaria transmission by month where we clearly distinguish that the months from July to November have the high number of cases meaning that where the high transmission of malaria occurs.

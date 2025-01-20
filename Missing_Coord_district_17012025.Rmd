@@ -1,0 +1,646 @@
+---
+title: "Missing Facilities and Cases maps 2020 to 2022"
+author: ' Ousmane Diao'
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: default
+  toc: true
+  toc_depth: 4
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.align = 'center', cache = TRUE)
+options(scipen = 999)
+```
+
+```{r}
+rm(list=ls())
+#gc()
+```
+
+```{r libraries}
+library(sf)
+library(snakecase)
+library(lubridate)
+library(janitor)
+library(tidyverse)
+library(viridis)
+library(RColorBrewer)
+library(ggpubr) # For combining multiple plots
+pkg<-c("raster","INLA","TMB","sparseMVN","Matrix","rgdal","gdistance",
+       "malariaAtlas","sp","rgeos","foreach","doParallel")
+for (i in 1: length(pkg)){library(pkg[[i]],character.only = TRUE)}
+
+
+library(exactextractr)
+library(tidyterra)
+country = "Senegal"
+```
+
+# `r country` {.tabset}
+
+## Exploratory Data Analysis of missing facilities
+
+
+```{r}
+# Load data
+outputpath <- "/home/odiao/Output_11_20_2024/"
+
+coordinates <- read_csv("/mnt/s3/stratification/CountryFolders/Senegal//Projects/1.0 Risk Map/2022/01 Raw data/Senegal data for MAP/Org Unit - Corrected Coordinates2.csv") %>% 
+  dplyr::select(adm1 = `Org Unit Name Level 2`, adm2 = `Org Unit Name Level 3`,
+         hf = `Org Unit Short Name`, lat = Latitude, long = Longitude) %>% 
+  mutate(adm1 = snakecase::to_snake_case(adm1),
+         adm2 = snakecase::to_snake_case(adm2),
+         hf = snakecase::to_snake_case(hf),
+         unique_id = paste("sen",row_number(), sep="_"))
+
+bnd <- st_read("/mnt/s3/stratification/CountryFolders/Senegal/Common files/Shapefiles/Shapes files 79 Districts VF/Shapes files 79 Districts VF/districtsanitaire_79_clean.shp")
+```
+
+
+```{r}
+data_2020 <- readxl::read_xlsx("/mnt/s3/stratification/CountryFolders/Senegal//Projects/1.0 Risk Map/2022/01 Raw data/PNLPdata/Extraction Data Paludisme DS FS DHIS2 2020_2021_2022.xlsx", sheet = 1)
+data_2021 <- readxl::read_xlsx("/mnt/s3/stratification/CountryFolders/Senegal//Projects/1.0 Risk Map/2022/01 Raw data/PNLPdata/Extraction Data Paludisme DS FS DHIS2 2020_2021_2022.xlsx", sheet = 2)
+data_2022 <- readxl::read_xlsx("/mnt/s3/stratification/CountryFolders/Senegal//Projects/1.0 Risk Map/2022/01 Raw data/PNLPdata/Extraction Data Paludisme DS FS DHIS2 2020_2021_2022.xlsx", sheet = 3)
+
+```
+
+
+```{r}
+###########################################
+# Step 1: Read in new case data
+###########################################
+
+# Inspect sample rows:
+# head(coordinates)
+
+data_2020_2022 <- bind_rows(data_2020, data_2021, data_2022) %>%
+  janitor::clean_names() %>%
+  separate(mois, into = c('monthname', 'year'), sep = " ") %>%
+  mutate(month = factor(monthname, 
+                        levels = c("Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre")),
+         month = as.numeric(month),
+         year = as.numeric(year),
+         year.month= paste(year, month, sep = ".")) %>%
+  mutate(adm1 = snakecase::to_snake_case(regions),
+         adm2 = snakecase::to_snake_case(districts),
+         hf = snakecase::to_snake_case(formation_sanitaire),
+         conf_u5 = cas_confirmes_feminin_0_4_ans + cas_confirmes_masculin_0_4_ans,
+         conf_ov5 = cas_confirmes_feminin_5_ans_excluant_les_femmes_enceintes + cas_confirmes_masculin_5_ans_excluant_les_femmes_enceintes,
+         pres_all = NA,
+         pres_u5 = NA,
+         pres_ov5 = NA,
+         pres_preg = NA) %>%
+  dplyr::select(adm1, adm2, hf, month, year, year.month, 
+                allout_all = total_consultants_toutes_affections_confondues,
+                allout_ov5 = consultants_toutes_affections_confondues_5_ans_excluant_les_femmes_enceintes,
+                allout_preg = consultants_toutes_affections_confondues_femme_enceinte,
+                allout_u5 = consultants_toutes_affections_confondues_0_4_ans,
+                conf_all = total_cas_confirmes, 
+                conf_ov5,
+                conf_preg = cas_confirmes_femme_enceinte,
+                conf_u5,
+                pres_all, pres_ov5, pres_preg, pres_u5,
+                test_all = total_tests_tdr_realises,
+                test_ov5 = tests_tdr_realises_5_ans_excluant_les_femmes_enceintes,
+                test_preg = tests_tdr_realises_femme_enceinte,
+                test_u5 = tests_tdr_realises_0_4_ans,
+                conf_f_all = total_cas_confirmes_feminin,
+                conf_f_ov5 = cas_confirmes_feminin_5_ans_excluant_les_femmes_enceintes,
+                conf_f_u5 = cas_confirmes_feminin_0_4_ans,
+                conf_m_all = total_cas_confirmes_masculin,
+                conf_m_ov5 = cas_confirmes_masculin_5_ans_excluant_les_femmes_enceintes,
+                conf_m_u5 = cas_confirmes_masculin_0_4_ans,
+                susp_all = total_cas_suspect,
+                susp_ov5 = cas_suspect_5_ans_excluant_les_femmes_enceintes,
+                susp_preg = cas_suspect_femme_enceinte,
+                susp_u5 = cas_suspect_0_4_ans) %>%
+  left_join(coordinates, by = c("adm1","adm2","hf"))
+```
+Here we are going to show how the missingness of geolocation looks like by health district. Since the facility records have the district name, we produced map of how many facilities are missing from each district (colors reflect the number of facilities without gps in each district).
+```{r}
+###########################################
+# Step 3: Summarize coverage of coordinates
+###########################################
+# Count total unique facilities
+facilities_total <- data_2020_2022 %>%
+  distinct(adm1, adm2, hf) %>%
+  nrow()
+
+# Count how many have coordinates
+facilities_with_coords <- data_2020_2022 %>%
+  distinct(adm1, adm2, hf, lat, long) %>%
+  filter(!is.na(lat)) %>%
+  nrow()
+
+# Facilities without coordinates
+facilities_without_coords <- facilities_total - facilities_with_coords
+
+# Print summary:
+cat("Total number Health facilities: ", facilities_total, "\n")
+cat("Total number of facilities with valide coordinates: ", facilities_with_coords, "\n")
+cat("Total number of facilities without coordinates: ", facilities_without_coords, "\n")
+```
+
+```{r}
+###########################################
+# Step 4: Number of missing coordinate facilities per admin2
+###########################################
+missing_coords_by_admin2 <- data_2020_2022 %>%
+  distinct(adm1, adm2, hf, lat, long) %>%
+  group_by(adm1, adm2) %>%
+  summarise(
+    missing_coords = sum(is.na(lat)),
+    .groups = "drop"
+  )
+```
+
+```{r}
+###########################################
+# Step 4-1: Number of facilities per admin2
+###########################################
+Number_facility_by_admin2 <- data_2020_2022 %>%
+  distinct(adm1, adm2, hf) %>%
+  group_by(adm1, adm2) %>%
+  summarise(
+    total_facilities_per_district = n(),
+    .groups = "drop"
+  )
+```
+
+```{r}
+bnd<-bnd%>%
+  mutate(adm2=snakecase::to_snake_case(NAME))
+#setdiff(missing_coords_by_admin2$adm2, bnd$adm2)
+name_corrections <- c(
+   "birekelane" = "birkelane",
+   "dianke_makhan" = "diankhe_makhan",
+   "maka_coulibantang" = "makacolibantang",
+   "joal_fadiouth" = "joal",
+   "nioro_du_rip" = "nioro",
+   "thionk_essyl" = "thionck_essyl",
+   "centre" = "dakar_centre",
+   "nord" = "dakar_nord",
+   "sud" = "dakar_sud",
+   "ouest" = "dakar_ouest",
+    "coki" = "koki",
+    "meckhe" = "mekhe"
+)
+
+bnd$adm2 <- recode(bnd$adm2, !!!name_corrections)
+#setdiff(missing_coords_by_admin2$adm2, bnd$adm2)
+```
+
+```{r}
+###########################################
+# Step 6: Join the missing coordinate data to the shapefile
+###########################################
+sen_adm2_data <- bnd %>%
+  left_join(missing_coords_by_admin2, by = c("adm2"))
+
+sen_adm2_data <- sen_adm2_data %>%
+  left_join(Number_facility_by_admin2, by = c("adm2"))
+
+# Missing areas will have NA for missing_coords and total_facilities if no match was found
+sen_adm2_data <- sen_adm2_data %>%
+  mutate(missing_coords = ifelse(is.na(missing_coords), 0, missing_coords),
+         total_facilities_per_district = ifelse(is.na(total_facilities_per_district), 0, total_facilities_per_district),
+         percentage_missing_ficility = missing_coords/total_facilities_per_district*100
+         )
+
+
+```
+
+```{r fig.width=14, fig.height=8}
+###########################################
+# Step 7: Visualise the number of facilities per admin2
+###########################################
+
+ggplot(data = sen_adm2_data) +
+  geom_sf(aes(fill = total_facilities_per_district), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "Number of Facility per District",
+    na.value = "grey85" # color for missing if needed
+  ) +
+  labs(title = "Facilities per District in Senegal") +
+  theme_minimal() +
+  # Remove axis lines and texts since it's a map
+  theme(strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(1.5, "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = "bottom"
+  )
+```
+
+
+```{r fig.width=14, fig.height=8}
+library(gridExtra)
+# Assuming sen_adm2_data is an sf object with a geometry column
+missing_fac_map<-ggplot(data = sen_adm2_data) +
+  geom_sf(aes(fill = missing_coords), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "Missing Facility Coordinates",
+    na.value = "grey85" # color for missing if needed
+  ) +
+  labs(title = "Missing Facility Coordinates by Admin2") +
+  theme_minimal() +
+  # Remove axis lines and texts since it's a map
+  theme(strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(1.5, "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = "bottom"
+  )
+
+# Assuming sen_adm2_data is an sf object with a geometry column
+Pourcentage_missing_fac_map<-ggplot(data = sen_adm2_data) +
+  geom_sf(aes(fill = missing_coords/total_facilities_per_district*100), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "% Missing Facility Coordinates",
+    na.value = "grey85" # color for missing if needed
+  ) +
+  labs(title = "Percentage of Missing Facility Coordinates by Admin2") +
+  theme_minimal() +
+  # Remove axis lines and texts since it's a map
+  theme(strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(1.5, "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = "bottom"
+  )
+grid.arrange(Pourcentage_missing_fac_map, missing_fac_map, ncol = 2)
+```
+
+
+
+```{r echo=FALSE}
+# Let's create a flag for missing coordinates
+data_2020_2022 <- data_2020_2022 %>%
+  mutate(missing_coords = ifelse(is.na(lat) | is.na(long), TRUE, FALSE))
+
+# Summarize total cases and missing-coordinate cases by admin2-year
+cases_admin2_year <- data_2020_2022 %>%
+  group_by(adm2, year) %>%
+  summarize(
+    total_cases = sum(conf_all, na.rm = TRUE),
+    missing_coord_cases = sum(conf_all[missing_coords], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_missing = (missing_coord_cases / total_cases) * 100
+  )
+
+# Print out the summary table
+#cases_admin2_year
+
+# If you want more granular time scale, e.g. admin2-year-month:
+cases_admin2_year_month <- data_2020_2022 %>%
+  group_by(adm2, year, month) %>%
+  summarize(
+    total_cases = sum(conf_all, na.rm = TRUE),
+    missing_coord_cases = sum(conf_all[missing_coords], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_missing = (missing_coord_cases / total_cases) * 100
+  )
+
+# Print out the admin2-year-month summary
+#cases_admin2_year_month
+```
+
+
+```{r fig.width=14, fig.height=8}
+# Assuming cases_admin2_summary is your data frame:
+# (adm2, total_cases, total_missing, pct_missing)
+cases_admin2_summary <- cases_admin2_year %>%
+  group_by(adm2) %>%
+  summarize(
+    total_cases = sum(total_cases),
+    total_missing = sum(missing_coord_cases),
+    pct_missing = (total_missing / total_cases) * 100,
+    .groups = "drop"
+  )
+
+cases_admin2_summary_top20 <- cases_admin2_summary %>%
+  arrange(desc(pct_missing)) %>%
+  slice(1:20) # top 20 with highest % missing
+
+ggplot(cases_admin2_summary_top20, aes(x = reorder(adm2, pct_missing), y = pct_missing)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Top 20 Admin2 by Percentage of Cases Missing Coordinates",
+    x = "Admin2",
+    y = "% Missing Cases"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(face = "bold",size = 14),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  )
+```
+
+
+```{r fig.width=14, fig.height=8}
+# Assuming sen_adm2 is your sf object with a column "adm2" that matches the data
+sen_adm2_data_missing <- bnd %>%
+  left_join(cases_admin2_summary, by = "adm2")
+
+
+plot_1<-ggplot(sen_adm2_data_missing) +
+  geom_sf(aes(fill = total_cases), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "Total Cases",
+    na.value = "grey90"
+  ) +
+  labs(
+    title = "Cases by Admin2 in Senegal"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(1.3, "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = "bottom"
+  )
+
+
+plot_2<-ggplot(sen_adm2_data_missing) +
+  geom_sf(aes(fill = total_missing), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "Missing Cases",
+    na.value = "grey90"
+  ) +
+  labs(
+    title = "Cases Missing Coordinates by Admin2"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(1.3, "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = "bottom"
+  )
+
+plot_3<-ggplot(sen_adm2_data_missing) +
+  geom_sf(aes(fill = pct_missing), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "% of Missing Cases",
+    na.value = "grey90"
+  ) +
+  labs(
+    title = "Cases Missing Coordinates by Admin2"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(1.1, "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = "bottom"
+  )
+
+grid.arrange(plot_1, plot_2, plot_3, ncol = 3)
+```
+
+
+
+```{r fig.width=14, fig.height=8}
+# Assuming sen_adm2 is your sf object with a column "adm2" that matches the data
+sen_adm2_data_missing <- bnd %>%
+  left_join(cases_admin2_summary, by = "adm2")
+
+
+# Calculate the global range for the color scale
+global_min <- min(c(sen_adm2_data_missing$total_cases, 
+                    sen_adm2_data_missing$total_missing, 
+                    sen_adm2_data_missing$total_cases - sen_adm2_data_missing$total_missing), na.rm = TRUE)
+global_max <- max(c(sen_adm2_data_missing$total_cases, 
+                    sen_adm2_data_missing$total_missing, 
+                    sen_adm2_data_missing$total_cases - sen_adm2_data_missing$total_missing), na.rm = TRUE)
+
+
+plot_1<-ggplot(sen_adm2_data_missing) +
+  geom_sf(aes(fill = total_cases), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "Total Cases",
+    limits = c(global_min, global_max),  # Consistent scale
+    na.value = "grey90"
+  ) +
+  labs(
+    title = "Cases by Admin2"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(1.3, "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = "bottom"
+  )
+
+
+plot_2<-ggplot(sen_adm2_data_missing) +
+  geom_sf(aes(fill = total_missing), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "Missing Cases",
+    limits = c(global_min, global_max),  # Consistent scale
+    na.value = "grey90"
+  ) +
+  labs(
+    title = "Cases Missing Coordinates by Admin2"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(1.3, "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = "bottom"
+  )
+
+plot_3<-ggplot(sen_adm2_data_missing) +
+  geom_sf(aes(fill = (total_cases-total_missing)), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "Difference",
+    limits = c(global_min, global_max),  # Consistent scale
+    na.value = "grey90"
+  ) +
+  labs(
+    title = "T_Cases - Missing_cases Coordinates"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(1.1, "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = "bottom"
+  )
+
+grid.arrange(plot_1, plot_2, plot_3, ncol = 3)
+```
+During the three years (2020, 2021 and 2022) there were registered `r sum(sen_adm2_data_missing$total_cases)` cases in the DHIS2 with `r sum(sen_adm2_data_missing$total_missing)` cases whom Facilities have no coordinates and `r sum(sen_adm2_data_missing$total_cases-sen_adm2_data_missing$total_missing)` whom Facilities were geolocated (longitude, latitude) representing `r round(sum(sen_adm2_data_missing$total_cases-sen_adm2_data_missing$total_missing)/sum(sen_adm2_data_missing$total_cases)*100, 2)` percent.
+
+
+
+```{r fig.width=14, fig.height=8}
+# Assuming `cases_admin2_year` looks like: adm2, year, total_cases, missing_coord_cases, pct_missing
+# and `sen_adm2` is your sf object with a column adm2 that matches.
+cases_admin2_year<-cases_admin2_year %>%
+  filter(!is.na(year))
+
+sen_adm2_data_year_filtered <-  bnd %>%
+  left_join(cases_admin2_year, by="adm2")
+
+ggplot(sen_adm2_data_year_filtered) +
+  geom_sf(aes(fill = pct_missing), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "% Missing Cases",
+    na.value = "grey90"
+  ) +
+  facet_wrap(~ year) +
+  labs(
+    title = "Percentage of Cases Missing Coordinates by Admin2 and Year"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(2., "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = 'bottom'
+  )
+```
+
+```{r fig.width=14, fig.height=8}
+# Assuming `cases_admin2_year` looks like: adm2, year, total_cases, missing_coord_cases, pct_missing
+# and `sen_adm2` is your sf object with a column adm2 that matches.
+cases_admin2_year<-cases_admin2_year %>%
+  filter(!is.na(year))
+
+sen_adm2_data_year_filtered <-  bnd %>%
+  left_join(cases_admin2_year, by="adm2")
+
+ggplot(sen_adm2_data_year_filtered) +
+  geom_sf(aes(fill = total_cases), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "Total Cases per district",
+    na.value = "grey90"
+  ) +
+  facet_wrap(~ year) +
+  labs(
+    title = "Cases by Admin2 and Year"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(2., "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = 'bottom'
+  )
+```
+
+```{r fig.width=14, fig.height=8}
+# Assuming `cases_admin2_year` looks like: adm2, year, total_cases, missing_coord_cases, pct_missing
+# and `sen_adm2` is your sf object with a column adm2 that matches.
+cases_admin2_year<-cases_admin2_year %>%
+  filter(!is.na(year))
+
+sen_adm2_data_year_filtered <-  bnd %>%
+  left_join(cases_admin2_year, by="adm2")
+
+ggplot(sen_adm2_data_year_filtered) +
+  geom_sf(aes(fill = (total_cases-missing_coord_cases)), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    direction = 1,
+    name = "Total Cases non missing per district",
+    na.value = "grey90"
+  ) +
+  facet_wrap(~ year) +
+  labs(
+    title = "Cases with coordinates by Admin2 and Year"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.key.width = unit(2., "cm"),                  
+    legend.key.height = unit(0.5, "cm"),
+    legend.position = 'bottom'
+  )
+```
+
+
+
